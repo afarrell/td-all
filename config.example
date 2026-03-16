@@ -1,0 +1,15 @@
+# td-all config — one directory per line
+# Lines starting with # are comments, blank lines are ignored.
+#
+# Each entry is scanned for .todos databases:
+#   - The directory itself
+#   - Its immediate children (one level deep)
+#
+# In addition, td-all always walks from $PWD up to $HOME.
+# Use ~ for $HOME.
+
+~
+~/Claude
+~/Projects
+~/Documents/EdV
+~/Documents/EdV/Projects

@@ -1,0 +1,82 @@
+#!/bin/zsh
+# td-all: Show open tasks across all project directories
+# Usage: td-all [td list flags...]
+#
+# Discovery:
+#   1. Walk from $PWD up to $HOME, collecting .todos dirs
+#   2. Read project roots from config, scan each + immediate children
+#   3. Deduplicate and display
+#
+# Config: ~/.config/td-all/config (one directory per line, ~ expanded)
+
+set -eo pipefail
+
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/td-all/config"
+
+# Load project roots from config
+PROJECT_ROOTS=()
+if [[ -f "$CONFIG_FILE" ]]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"        # strip comments
+    line="${line## }"         # trim leading space
+    line="${line%% }"         # trim trailing space
+    [[ -z "$line" ]] && continue
+    line="${line/#\~/$HOME}"  # expand ~
+    PROJECT_ROOTS+=("$line")
+  done < "$CONFIG_FILE"
+else
+  echo "No config found at $CONFIG_FILE" >&2
+  echo "Create one with project root directories (one per line)." >&2
+  echo "See: https://github.com/afarrell/td-all" >&2
+  exit 1
+fi
+
+EXTRA_ARGS=("$@")
+typeset -A seen  # zsh associative array for dedup
+
+add_if_todos() {
+  local dir="$1"
+  if [[ -d "$dir/.todos" ]]; then
+    local resolved="${dir:A}"  # zsh realpath
+    if [[ -z "${seen[$resolved]:-}" ]]; then
+      seen[$resolved]="$dir"
+    fi
+  fi
+}
+
+# 1. Walk from $PWD up to $HOME
+current="$PWD"
+home_resolved="${HOME:A}"
+while true; do
+  add_if_todos "$current"
+  [[ "${current:A}" == "$home_resolved" ]] && break
+  parent="${current:h}"
+  [[ "$parent" == "$current" ]] && break
+  current="$parent"
+done
+
+# 2. Scan project roots + immediate children
+for root in "${PROJECT_ROOTS[@]}"; do
+  [[ -d "$root" ]] || continue
+  add_if_todos "$root"
+  for child in "$root"/*(N/); do
+    add_if_todos "$child"
+  done
+done
+
+# 3. Sort by display path and print
+if (( ${#seen} == 0 )); then
+  echo "No .todos databases found"
+  exit 0
+fi
+
+for resolved in ${(ok)seen}; do
+  dir="${seen[$resolved]}"
+  display="${dir/#$HOME/~}"
+  output=$(td list --work-dir "$dir" "${EXTRA_ARGS[@]}" 2>/dev/null) || true
+  if [[ -n "$output" ]]; then
+    echo "── $display ──"
+    echo "$output"
+    echo ""
+  fi
+done
