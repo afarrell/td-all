@@ -76,7 +76,7 @@ for resolved in ${(ok)seen}; do
   output=$(td list --work-dir "$dir" "${EXTRA_ARGS[@]}" 2>/dev/null) || true
   if [[ -n "$output" ]]; then
     echo "── $display ──"
-    echo "$output"
+    echo "$output" | while IFS= read -r line; do echo "$line [$display]"; done
     echo ""
   fi
 done
