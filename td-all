@@ -8,6 +8,12 @@
 #   3. Deduplicate and display
 #
 # Config: ~/.config/td-all/config (one directory per line, ~ expanded)
+#
+# Limits: `td list` shows 50 rows per project unless told otherwise, so td-all
+# asks for $DEFAULT_LIMIT rows unless the caller passes -n/--limit, which is
+# respected as given. Whenever a project's row count reaches the limit in use,
+# td-all warns on stderr and names the project. A td failure is reported with
+# the project name and makes td-all exit 1 after the other projects are listed.
 
 set -eo pipefail
 
@@ -32,6 +38,70 @@ else
 fi
 
 EXTRA_ARGS=("$@")
+
+# A positive number, not 0 or -1: td 0.44 reads 0 as "50" and -1 as unlimited,
+# td 0.69 reads 0 as unlimited and rejects negatives. A large N means the same
+# thing to both.
+DEFAULT_LIMIT=100000
+
+# Find the caller's own limit and output format in the passed-through args.
+# -n may be clustered behind td list's boolean short flags (-a -h -m -o -r).
+user_limit=""   # empty = caller gave none
+format="short"
+i=1
+while (( i <= ${#EXTRA_ARGS} )); do
+  arg="${EXTRA_ARGS[i]}"
+  case "$arg" in
+    --) break ;;
+    --limit=*) user_limit="${arg#--limit=}" ;;
+    --limit) (( i++ )); user_limit="${EXTRA_ARGS[i]:-}" ;;
+    --json|--format=json) format="json" ;;
+    --long|--format=long) [[ "$format" == "json" ]] || format="long" ;;
+    --format)
+      (( i++ ))
+      case "${EXTRA_ARGS[i]:-}" in
+        json) format="json" ;;
+        long) [[ "$format" == "json" ]] || format="long" ;;
+      esac ;;
+    --*) ;;
+    -*)
+      if [[ "$arg" =~ '^-[ahmor]*n(.*)$' ]]; then
+        rest="${match[1]}"
+        if [[ -n "$rest" ]]; then
+          user_limit="${rest#=}"
+        else
+          (( i++ )); user_limit="${EXTRA_ARGS[i]:-}"
+        fi
+      fi ;;
+  esac
+  (( i++ ))
+done
+
+LIMIT_ARGS=()
+if [[ -z "$user_limit" ]]; then
+  LIMIT_ARGS=(--limit "$DEFAULT_LIMIT")
+  limit="$DEFAULT_LIMIT"
+else
+  limit="$user_limit"
+fi
+
+warn() { print -u2 -- "td-all: WARNING: $*"; }
+
+# Number of tasks in a `td list` result, by output format.
+count_rows() {
+  local dir="$1" output="$2" n
+  case "$format" in
+    short) n=$(print -r -- "$output" | grep -a -cv -e '^[[:space:]]*$' -e '^No issues found$') || true ;;
+    json)  n=$(print -r -- "$output" | grep -a -c '^  {$') || true ;;
+    long)  # long records have no reliable delimiter; count the same query as JSON
+      n=$(td list --work-dir "$dir" "${LIMIT_ARGS[@]}" "${EXTRA_ARGS[@]}" --json 2>/dev/null | grep -a -c '^  {$') || true ;;
+  esac
+  print -r -- "${n:-0}"
+}
+
+errfile=$(mktemp "${TMPDIR:-/tmp}/td-all.XXXXXX")
+trap 'rm -f "$errfile"' EXIT
+failed=0
 typeset -A seen  # zsh associative array for dedup
 
 add_if_todos() {
@@ -73,10 +143,37 @@ fi
 for resolved in ${(ok)seen}; do
   dir="${seen[$resolved]}"
   display="${dir/#$HOME/~}"
-  output=$(td list --work-dir "$dir" "${EXTRA_ARGS[@]}" 2>/dev/null) || true
+
+  rc=0
+  output=$(td list --work-dir "$dir" "${LIMIT_ARGS[@]}" "${EXTRA_ARGS[@]}" 2>"$errfile") || rc=$?
+  err=$(<"$errfile")
+
+  if (( rc != 0 )); then
+    # td prints its usage text around the real message; keep just the message.
+    msg=$(print -r -- "$err" | grep -a -m1 -E '^(ERROR|Error): ' | sed -E 's/^(ERROR|Error): //') || true
+    print -u2 -- "td-all: ERROR in $display: ${msg:-${err:-td exited $rc with no message}}"
+    failed=1
+    continue
+  fi
+
   if [[ -n "$output" ]]; then
     echo "── $display ──"
     echo "$output" | while IFS= read -r line; do echo "$line [$display]"; done
     echo ""
   fi
+
+  # td succeeded but said something on stderr (newer td reports its own
+  # truncation there): pass it on rather than drop it.
+  [[ -n "$err" ]] && warn "$display: td said: $err"
+
+  if [[ "$limit" == <-> ]]; then
+    rows=$(count_rows "$dir" "$output")
+    if (( limit > 0 && rows >= limit )); then
+      warn "$display: $rows tasks shown, which is the limit in use ($limit); more may be hidden. Raise -n/--limit to see them."
+    elif (( limit == 0 && rows == 50 )); then
+      warn "$display: exactly 50 tasks shown with --limit 0; older td versions read 0 as 50, so more may be hidden. Pass a larger -n/--limit to be sure."
+    fi
+  fi
 done
+
+exit $failed

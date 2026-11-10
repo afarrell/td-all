@@ -27,6 +27,29 @@ Edit `~/.config/td-all/config` — one directory per line, `~` is expanded, `#` 
 ## Usage
 
 ```sh
-td-all                 # all open tasks across discovered projects
+td-all                 # every open task across discovered projects
 td-all [td list flags] # extra args are passed through to `td list`
+td-all -n 10           # at most 10 tasks per project
 ```
+
+### Limits
+
+`td list` shows 50 tasks per project unless told otherwise. `td-all` asks for 100000 per project instead, so nothing is cut off. If you pass your own `-n`/`--limit`, it is passed to `td` unchanged and applies per project.
+
+Whenever a project shows as many tasks as the limit in use, `td-all` prints a warning on stderr naming the project, because more may be hidden:
+
+```
+td-all: WARNING: ~/Projects/foo: 10 tasks shown, which is the limit in use (10); more may be hidden. Raise -n/--limit to see them.
+```
+
+Avoid `-n 0`: td 0.44 reads it as 50, while td 0.69 reads it as unlimited. `td-all` warns when `-n 0` returns exactly 50 tasks.
+
+### Errors
+
+If `td` fails for a project, `td-all` prints the error on stderr with the project name, carries on with the other projects, and exits 1 at the end:
+
+```
+td-all: ERROR in ~/Projects/foo: enable WAL mode: file is not a database (26)
+```
+
+Anything `td` writes to stderr on a successful run is also passed through as a warning with the project name.
